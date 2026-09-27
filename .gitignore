@@ -1,0 +1,33 @@
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Testing & Linting
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs & OS artifacts
+*.log
+.DS_Store
+Thumbs.db
+
+# Model weights & large binaries (if saved locally)
+*.bin
+*.pt
+*.pth
+*.safetensors
+*.onnx
+
+# Temporary scratch & environment variables
+.env
+scratch/
