@@ -10,6 +10,7 @@ from tools.filesystem import (
     WriteFileTool,
     EditFileTool,
 )
+from tools.screen import ScreenTool
 
 __all__ = [
     "BaseTool",
@@ -23,4 +24,5 @@ __all__ = [
     "CreateFileTool",
     "WriteFileTool",
     "EditFileTool",
+    "ScreenTool",
 ]

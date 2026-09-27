@@ -4,3 +4,5 @@ accelerate
 bitsandbytes
 rich
 pytest
+jeepney
+qwen-vl-utils

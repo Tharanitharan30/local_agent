@@ -19,6 +19,7 @@ from tools.filesystem import (
     WriteFileTool,
     EditFileTool,
 )
+from tools.screen import ScreenTool
 
 console = Console()
 
@@ -127,6 +128,8 @@ class Agent:
             return self.tools[tool_name]
         if f"filesystem.{tool_name}" in self.tools:
             return self.tools[f"filesystem.{tool_name}"]
+        if f"screen.{tool_name}" in self.tools:
+            return self.tools[f"screen.{tool_name}"]
         if "." in tool_name:
             suffix = tool_name.split(".", 1)[1]
             if suffix in self.tools:
@@ -208,6 +211,10 @@ class Agent:
             if tool_name == "terminal" and isinstance(arguments, dict) and "command" in arguments:
                 console.print(f"[bold white][CMD][/bold white]  {arguments['command']}")
             elif isinstance(arguments, dict):
+                if tool_name in ("screen.capture", "screen", "capture_screen", "capture"):
+                    disp = arguments.get("display", "primary")
+                    qry = arguments.get("query", "")
+                    console.print(f"[bold white][SCREEN][/bold white] display='{disp}' query='{qry}'")
                 if "path" in arguments:
                     console.print(f"[bold white][PATH][/bold white] {arguments['path']}")
                 if "pattern" in arguments:
@@ -284,6 +291,7 @@ def main():
     agent.register_tool(WriteFileTool())
     agent.register_tool(EditFileTool())
     agent.register_tool(FilesystemTool())
+    agent.register_tool(ScreenTool())
 
     console.print("\n[bold green]Zia is ready! Type 'exit' or 'quit' to stop.[/bold green]\n")
 
@@ -303,6 +311,8 @@ def main():
                 console.print("\n[bold yellow]Exiting...[/bold yellow]")
                 break
     finally:
+        from model.vision import get_vision_model
+        get_vision_model().unload()
         model.unload()
 
 
