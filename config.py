@@ -18,7 +18,7 @@ BNB_4BIT_USE_DOUBLE_QUANT = os.getenv("ZIA_BNB_4BIT_USE_DOUBLE_QUANT", "true").l
 BNB_4BIT_COMPUTE_DTYPE = os.getenv("ZIA_BNB_4BIT_COMPUTE_DTYPE", "float16")
 
 # Context & Generation Configuration
-MAX_CONTEXT_LENGTH = int(os.getenv("ZIA_MAX_CONTEXT_LENGTH", "2048"))
+MAX_CONTEXT_LENGTH = int(os.getenv("ZIA_MAX_CONTEXT_LENGTH", "4096"))
 MAX_NEW_TOKENS = int(os.getenv("ZIA_MAX_NEW_TOKENS", "256"))
 TEMPERATURE = float(os.getenv("ZIA_TEMPERATURE", "0.6"))
 TOP_P = float(os.getenv("ZIA_TOP_P", "0.8"))
@@ -32,6 +32,12 @@ TERMINAL_TIMEOUT = int(os.getenv("ZIA_TERMINAL_TIMEOUT", "10"))
 
 # Filesystem Tool Configuration
 WORKSPACE_ROOT = Path(os.getenv("ZIA_WORKSPACE_ROOT", str(BASE_DIR))).resolve()
-MAX_READ_FILE_SIZE = int(os.getenv("ZIA_MAX_READ_FILE_SIZE", str(64 * 1024)))  # 64 KB limit
+MAX_READ_FILE_SIZE = int(os.getenv("ZIA_MAX_READ_FILE_SIZE", str(64 * 1024)))    # 64 KB limit
+MAX_WRITE_FILE_SIZE = int(os.getenv("ZIA_MAX_WRITE_FILE_SIZE", str(64 * 1024)))  # 64 KB limit
 MAX_SEARCH_RESULTS = int(os.getenv("ZIA_MAX_SEARCH_RESULTS", "50"))
 MAX_SEARCH_DEPTH = int(os.getenv("ZIA_MAX_SEARCH_DEPTH", "5"))
+
+# Backup Configuration for File Modifications
+ENABLE_BACKUPS = os.getenv("ZIA_ENABLE_BACKUPS", "true").lower() in ("true", "1", "yes")
+BACKUP_DIR_NAME = os.getenv("ZIA_BACKUP_DIR_NAME", ".zia_backups")
+MAX_BACKUPS_PER_FILE = int(os.getenv("ZIA_MAX_BACKUPS_PER_FILE", "5"))

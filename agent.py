@@ -15,6 +15,9 @@ from tools.filesystem import (
     ReadFileTool,
     SearchFilesTool,
     FileInfoTool,
+    CreateFileTool,
+    WriteFileTool,
+    EditFileTool,
 )
 
 console = Console()
@@ -89,7 +92,6 @@ class Agent:
         pattern = r"<tool_call>\s*({.*?})\s*</tool_call>"
         match = re.search(pattern, text, re.DOTALL)
         if not match:
-            # Fallback for direct JSON output without tags
             try:
                 candidate = text.strip()
                 if candidate.startswith("{") and candidate.endswith("}"):
@@ -156,6 +158,16 @@ class Agent:
 
         return True, None, tool
 
+    def _prune_messages(self, max_history_turns: int = 12) -> None:
+        """
+        Keep system prompt intact and retain the most recent conversational turns
+        to prevent runaway context growth in long sessions.
+        """
+        if len(self.messages) > (max_history_turns * 2) + 1:
+            system_msg = self.messages[0]
+            recent_msgs = self.messages[-(max_history_turns * 2):]
+            self.messages = [system_msg] + recent_msgs
+
     def run(self, user_input: str) -> str:
         """
         Processes a user request through the bounded agent loop up to max_tool_iterations.
@@ -164,6 +176,7 @@ class Agent:
         if not self.messages:
             self.messages.append({"role": "system", "content": self.system_prompt})
 
+        self._prune_messages()
         self.messages.append({"role": "user", "content": user_input})
         tool_schemas = self.get_tool_schemas()
 
@@ -199,6 +212,8 @@ class Agent:
                     console.print(f"[bold white][PATH][/bold white] {arguments['path']}")
                 if "pattern" in arguments:
                     console.print(f"[bold white][PATTERN][/bold white] {arguments['pattern']}")
+                if "old_text" in arguments and "new_text" in arguments:
+                    console.print(f"[bold white][EDIT][/bold white] Replace '{arguments['old_text']}' -> '{arguments['new_text']}'")
             sys.stdout.flush()
 
             # Validate tool call
@@ -230,7 +245,7 @@ class Agent:
             elif exit_code is not None:
                 console.print(f"[bold {status_color}][RESULT][/bold {status_color}] exit_code={exit_code}")
             else:
-                status_text = "OK" if result.get("success") else result.get("error", "Failed")
+                status_text = result.get("message") or ("OK" if result.get("success") else result.get("error", "Failed"))
                 console.print(f"[bold {status_color}][RESULT][/bold {status_color}] {status_text}")
             sys.stdout.flush()
 
@@ -265,6 +280,9 @@ def main():
     agent.register_tool(ReadFileTool())
     agent.register_tool(SearchFilesTool())
     agent.register_tool(FileInfoTool())
+    agent.register_tool(CreateFileTool())
+    agent.register_tool(WriteFileTool())
+    agent.register_tool(EditFileTool())
     agent.register_tool(FilesystemTool())
 
     console.print("\n[bold green]Zia is ready! Type 'exit' or 'quit' to stop.[/bold green]\n")

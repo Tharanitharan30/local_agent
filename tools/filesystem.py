@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 import fnmatch
 import os
 from pathlib import Path
+import shutil
+import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 import config
@@ -13,7 +15,7 @@ def resolve_safe_path(path_str: str, workspace_root: Path) -> Tuple[Optional[Pat
     Safely resolve a path string against the workspace root.
     Supports relative paths, absolute paths, and '~'.
     Enforces that the resolved target is strictly contained within workspace_root.
-    Blocks access to virtual/system filesystems (/proc, /sys, /dev, /etc).
+    Blocks access to virtual/system filesystems (/proc, /sys, /dev, /etc, /boot, /usr).
 
     Returns:
         (resolved_path, error_message)
@@ -38,9 +40,9 @@ def resolve_safe_path(path_str: str, workspace_root: Path) -> Tuple[Optional[Pat
             f"which is outside the allowed workspace '{ws_resolved}'."
         )
 
-    # Prevent traversal into dangerous virtual/system filesystems
+    # Prevent traversal into sensitive system/virtual directories
     cand_str = str(candidate)
-    for forbidden in ("/proc", "/sys", "/dev", "/etc"):
+    for forbidden in ("/proc", "/sys", "/dev", "/etc", "/boot", "/usr", "/root"):
         if cand_str == forbidden or cand_str.startswith(forbidden + "/"):
             return None, f"Access denied: Access to system directory '{forbidden}' is forbidden."
 
@@ -61,50 +63,176 @@ def is_binary_file(file_path: Path) -> bool:
 
 class FilesystemTool(BaseTool):
     """
-    Unified read-only filesystem tool for Zia.
-    Provides safe, structured access to list directories, read text files,
-    search for files, and retrieve file metadata within the allowed workspace.
+    Unified filesystem tool for Zia.
+    Provides safe, structured read and write operations strictly within the workspace.
+    Supported operations:
+      Read: 'list_directory', 'read_file', 'search_files', 'file_info'
+      Write: 'create_file', 'write_file', 'edit_file'
     """
 
     name = "filesystem"
     description = (
-        "Read-only filesystem tool. Supports operations: 'list_directory', 'read_file', "
-        "'search_files', and 'file_info' within the allowed workspace."
+        "Filesystem tool for workspace file management. "
+        "Supports operations: 'list_directory', 'read_file', 'search_files', 'file_info', "
+        "'create_file', 'write_file', and 'edit_file'."
     )
     input_schema = {
         "type": "object",
         "properties": {
             "operation": {
                 "type": "string",
-                "enum": ["list_directory", "read_file", "search_files", "file_info"],
-                "description": "The filesystem read operation to perform."
+                "enum": [
+                    "list_directory",
+                    "read_file",
+                    "search_files",
+                    "file_info",
+                    "create_file",
+                    "write_file",
+                    "edit_file",
+                ],
+                "description": "The filesystem operation to perform."
             },
             "path": {
                 "type": "string",
-                "description": "Target file or directory path (relative to workspace or absolute within workspace)."
+                "description": "Target file or directory path within workspace."
+            },
+            "content": {
+                "type": "string",
+                "description": "Text content to write (for 'create_file' and 'write_file')."
+            },
+            "old_text": {
+                "type": "string",
+                "description": "Exact text snippet to replace (for 'edit_file')."
+            },
+            "new_text": {
+                "type": "string",
+                "description": "Replacement text snippet (for 'edit_file')."
             },
             "pattern": {
                 "type": "string",
-                "description": "Optional search pattern (e.g. '*.py') used with 'search_files'."
+                "description": "Search pattern (e.g. '*.py') used with 'search_files'."
             }
         },
         "required": ["operation", "path"]
     }
 
-    # Directories to automatically skip during recursive search to avoid token blowout
-    IGNORE_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", ".tox", "node_modules"}
+    IGNORE_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", ".tox", "node_modules", ".zia_backups"}
 
     def __init__(
         self,
         workspace_root: Path = config.WORKSPACE_ROOT,
         max_read_size: int = config.MAX_READ_FILE_SIZE,
+        max_write_size: int = config.MAX_WRITE_FILE_SIZE,
         max_search_results: int = config.MAX_SEARCH_RESULTS,
         max_search_depth: int = config.MAX_SEARCH_DEPTH,
+        enable_backups: bool = config.ENABLE_BACKUPS,
+        backup_dir_name: str = config.BACKUP_DIR_NAME,
+        max_backups_per_file: int = config.MAX_BACKUPS_PER_FILE,
     ):
         self.workspace_root = workspace_root
         self.max_read_size = max_read_size
+        self.max_write_size = max_write_size
         self.max_search_results = max_search_results
         self.max_search_depth = max_search_depth
+        self.enable_backups = enable_backups
+        self.backup_dir_name = backup_dir_name
+        self.max_backups_per_file = max_backups_per_file
+
+    # --------------------------------------------------------------------------
+    # Backup Management
+    # --------------------------------------------------------------------------
+
+    def _create_backup(self, target_path: Path) -> Optional[Path]:
+        """Create a timestamped backup of a file before modifying it."""
+        if not self.enable_backups or not target_path.exists() or not target_path.is_file():
+            return None
+
+        backup_root = self.workspace_root / self.backup_dir_name
+        try:
+            backup_root.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            rel_name = target_path.name
+            backup_name = f"{rel_name}.{timestamp}.bak"
+            backup_file = backup_root / backup_name
+            shutil.copy2(target_path, backup_file)
+
+            # Prune older backups for this file if exceeding limit
+            existing = sorted(
+                backup_root.glob(f"{rel_name}.*.bak"),
+                key=lambda p: p.stat().st_mtime,
+            )
+            while len(existing) > self.max_backups_per_file:
+                oldest = existing.pop(0)
+                try:
+                    oldest.unlink()
+                except OSError:
+                    pass
+
+            return backup_file
+        except Exception:
+            return None
+
+    # --------------------------------------------------------------------------
+    # Atomic Write Utility
+    # --------------------------------------------------------------------------
+
+    def _atomic_write(self, target_path: Path, content: str) -> Tuple[bool, Optional[str], int]:
+        """
+        Atomically write text content to target_path:
+        1. Write to temporary file in the same directory.
+        2. Flush and fsync.
+        3. Atomically replace target.
+        4. Verify result.
+        Returns (success, error_message, bytes_written).
+        """
+        encoded = content.encode("utf-8")
+        bytes_count = len(encoded)
+
+        if bytes_count > self.max_write_size:
+            return (
+                False,
+                f"Content size ({bytes_count} bytes) exceeds maximum allowed write size ({self.max_write_size} bytes).",
+                0,
+            )
+
+        parent_dir = target_path.parent
+        if not parent_dir.exists():
+            return False, f"Parent directory '{parent_dir}' does not exist.", 0
+
+        temp_file = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=parent_dir,
+                mode="wb",
+                delete=False,
+                prefix=".zia_tmp_",
+            ) as f:
+                temp_file = Path(f.name)
+                f.write(encoded)
+                f.flush()
+                os.fsync(f.fileno())
+
+            # Atomic rename / replace
+            os.replace(temp_file, target_path)
+
+            # Verification
+            if not target_path.exists():
+                return False, f"Verification failed: '{target_path}' does not exist after write.", 0
+            if target_path.stat().st_size != bytes_count:
+                return False, "Verification failed: File size mismatch after atomic write.", 0
+
+            return True, None, bytes_count
+        except Exception as e:
+            if temp_file and temp_file.exists():
+                try:
+                    temp_file.unlink()
+                except OSError:
+                    pass
+            return False, f"Atomic write failed: {str(e)}", 0
+
+    # --------------------------------------------------------------------------
+    # Read Operations
+    # --------------------------------------------------------------------------
 
     def list_directory(self, path: str = ".") -> Dict[str, Any]:
         """List contents of a single directory level."""
@@ -177,7 +305,6 @@ class FilesystemTool(BaseTool):
             stat = target.stat()
             file_size = stat.st_size
 
-            # Enforce file size limit to prevent context explosion
             if file_size > self.max_read_size:
                 return {
                     "success": False,
@@ -190,7 +317,6 @@ class FilesystemTool(BaseTool):
                     )
                 }
 
-            # Check for binary file
             if is_binary_file(target):
                 return {
                     "success": False,
@@ -234,7 +360,6 @@ class FilesystemTool(BaseTool):
 
         try:
             for root, dirs, files in os.walk(target):
-                # Prune ignored virtual environment / cache directories
                 dirs[:] = [d for d in dirs if d not in self.IGNORE_DIRS and not d.startswith(".")]
 
                 current_depth = len(Path(root).resolve().parts) - target_depth
@@ -313,20 +438,213 @@ class FilesystemTool(BaseTool):
         except Exception as e:
             return {"success": False, "operation": "file_info", "path": str(target), "error": str(e)}
 
+    # --------------------------------------------------------------------------
+    # Write & Modification Operations (Milestone 3)
+    # --------------------------------------------------------------------------
+
+    def create_file(self, path: str, content: str = "") -> Dict[str, Any]:
+        """
+        Create a new text file within workspace.
+        Refuses to overwrite existing files.
+        Uses atomic writing.
+        """
+        target, err = resolve_safe_path(path, self.workspace_root)
+        if err:
+            return {"success": False, "operation": "create_file", "path": path, "error": err}
+
+        if target.exists():
+            return {
+                "success": False,
+                "operation": "create_file",
+                "path": str(target),
+                "error": "File already exists. Use 'write_file' or 'edit_file' to modify existing files."
+            }
+
+        if not target.parent.exists():
+            return {
+                "success": False,
+                "operation": "create_file",
+                "path": str(target),
+                "error": f"Parent directory '{target.parent}' does not exist."
+            }
+
+        success, write_err, bytes_written = self._atomic_write(target, content)
+        if not success:
+            return {
+                "success": False,
+                "operation": "create_file",
+                "path": str(target),
+                "error": write_err or "Failed to create file."
+            }
+
+        return {
+            "success": True,
+            "operation": "create_file",
+            "path": str(target.relative_to(self.workspace_root)),
+            "message": "File created successfully",
+            "bytes_written": bytes_written
+        }
+
+    def write_file(self, path: str, content: str) -> Dict[str, Any]:
+        """
+        Replace the contents of an existing text file within workspace.
+        Refuses if file does not exist (does not create silently).
+        Creates automatic backup and performs atomic write.
+        """
+        target, err = resolve_safe_path(path, self.workspace_root)
+        if err:
+            return {"success": False, "operation": "write_file", "path": path, "error": err}
+
+        if not target.exists():
+            return {
+                "success": False,
+                "operation": "write_file",
+                "path": str(target),
+                "error": f"File '{path}' does not exist. Use 'create_file' to create a new file."
+            }
+
+        if not target.is_file():
+            return {
+                "success": False,
+                "operation": "write_file",
+                "path": str(target),
+                "error": f"Path '{path}' is a directory, not a file."
+            }
+
+        if is_binary_file(target):
+            return {
+                "success": False,
+                "operation": "write_file",
+                "path": str(target),
+                "error": f"Refusing to overwrite binary file '{target.name}' with text."
+            }
+
+        # Create backup prior to modification
+        self._create_backup(target)
+
+        success, write_err, bytes_written = self._atomic_write(target, content)
+        if not success:
+            return {
+                "success": False,
+                "operation": "write_file",
+                "path": str(target),
+                "error": write_err or "Failed to write file."
+            }
+
+        return {
+            "success": True,
+            "operation": "write_file",
+            "path": str(target.relative_to(self.workspace_root)),
+            "message": "File written successfully",
+            "bytes_written": bytes_written
+        }
+
+    def edit_file(self, path: str, old_text: str, new_text: str) -> Dict[str, Any]:
+        """
+        Perform a deterministic replacement of 'old_text' with 'new_text' in an existing file.
+        Fails cleanly if 'old_text' is not found or occurs multiple times (ambiguity).
+        Creates automatic backup and performs atomic write.
+        """
+        target, err = resolve_safe_path(path, self.workspace_root)
+        if err:
+            return {"success": False, "operation": "edit_file", "path": path, "error": err}
+
+        if not target.exists():
+            return {
+                "success": False,
+                "operation": "edit_file",
+                "path": str(target),
+                "error": f"File '{path}' does not exist."
+            }
+
+        if not target.is_file():
+            return {
+                "success": False,
+                "operation": "edit_file",
+                "path": str(target),
+                "error": f"Path '{path}' is a directory, not a file."
+            }
+
+        if is_binary_file(target):
+            return {
+                "success": False,
+                "operation": "edit_file",
+                "path": str(target),
+                "error": f"Refusing to edit binary file '{target.name}'."
+            }
+
+        try:
+            content = target.read_text(encoding="utf-8")
+        except Exception as e:
+            return {
+                "success": False,
+                "operation": "edit_file",
+                "path": str(target),
+                "error": f"Failed to read file for editing: {str(e)}"
+            }
+
+        if old_text not in content:
+            return {
+                "success": False,
+                "operation": "edit_file",
+                "path": str(target),
+                "error": f"Target snippet 'old_text' was not found in '{path}'."
+            }
+
+        count = content.count(old_text)
+        if count > 1:
+            return {
+                "success": False,
+                "operation": "edit_file",
+                "path": str(target),
+                "error": (
+                    f"Ambiguous match: Target snippet occurs {count} times in '{path}'. "
+                    "Please provide more surrounding context to match a unique occurrence."
+                )
+            }
+
+        new_content = content.replace(old_text, new_text, 1)
+
+        # Create backup prior to modification
+        self._create_backup(target)
+
+        success, write_err, bytes_written = self._atomic_write(target, new_content)
+        if not success:
+            return {
+                "success": False,
+                "operation": "edit_file",
+                "path": str(target),
+                "error": write_err or "Failed to edit file."
+            }
+
+        return {
+            "success": True,
+            "operation": "edit_file",
+            "path": str(target.relative_to(self.workspace_root)),
+            "message": "File edited successfully",
+            "bytes_written": bytes_written,
+            "replacements": 1
+        }
+
     def execute(
         self,
         operation: str = "",
         path: str = ".",
         pattern: str = "*",
+        content: str = "",
+        old_text: str = "",
+        new_text: str = "",
         **kwargs: Any
     ) -> Dict[str, Any]:
         """
-        Execute a read-only filesystem operation.
-        Supported operations: 'list_directory', 'read_file', 'search_files', 'file_info'.
+        Execute any supported filesystem operation.
         """
         op = (operation or kwargs.get("action") or "").lower().strip()
         p = path or kwargs.get("file_path") or kwargs.get("dir_path") or "."
         pat = pattern or kwargs.get("query") or "*"
+        c = content or kwargs.get("text") or ""
+        ot = old_text or kwargs.get("target_text") or ""
+        nt = new_text or kwargs.get("replacement") or ""
 
         if op == "list_directory":
             return self.list_directory(p)
@@ -336,14 +654,32 @@ class FilesystemTool(BaseTool):
             return self.search_files(p, pat)
         elif op == "file_info":
             return self.file_info(p)
+        elif op == "create_file":
+            return self.create_file(p, c)
+        elif op == "write_file":
+            return self.write_file(p, c)
+        elif op == "edit_file":
+            return self.edit_file(p, ot, nt)
         else:
-            supported = ["list_directory", "read_file", "search_files", "file_info"]
+            supported = [
+                "list_directory",
+                "read_file",
+                "search_files",
+                "file_info",
+                "create_file",
+                "write_file",
+                "edit_file",
+            ]
             return {
                 "success": False,
                 "operation": op,
                 "error": f"Unknown filesystem operation '{op}'. Supported: {supported}"
             }
 
+
+# ------------------------------------------------------------------------------
+# Modular Tool Wrappers for Registration
+# ------------------------------------------------------------------------------
 
 class ListDirectoryTool(BaseTool):
     """Tool for listing directory contents."""
@@ -439,3 +775,97 @@ class FileInfoTool(BaseTool):
 
     def execute(self, path: str = "", **kwargs: Any) -> Dict[str, Any]:
         return self.fs.file_info(path)
+
+
+class CreateFileTool(BaseTool):
+    """Tool for creating a new text file within workspace."""
+    name = "filesystem.create_file"
+    aliases = ["create_file"]
+    description = (
+        "Create a new text file within the workspace. Refuses if the file already exists. "
+        "Use when asked to create a new file."
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Path of the new file to create."
+            },
+            "content": {
+                "type": "string",
+                "description": "Initial text content of the file."
+            }
+        },
+        "required": ["path", "content"]
+    }
+
+    def __init__(self, fs_tool: Optional[FilesystemTool] = None):
+        self.fs = fs_tool or FilesystemTool()
+
+    def execute(self, path: str = "", content: str = "", **kwargs: Any) -> Dict[str, Any]:
+        return self.fs.create_file(path, content)
+
+
+class WriteFileTool(BaseTool):
+    """Tool for replacing content of an existing text file."""
+    name = "filesystem.write_file"
+    aliases = ["write_file"]
+    description = (
+        "Replace the entire content of an existing text file within workspace. "
+        "Refuses if file does not exist. Use when completely rewriting a file."
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Path of the existing file to overwrite."
+            },
+            "content": {
+                "type": "string",
+                "description": "New text content to replace the file with."
+            }
+        },
+        "required": ["path", "content"]
+    }
+
+    def __init__(self, fs_tool: Optional[FilesystemTool] = None):
+        self.fs = fs_tool or FilesystemTool()
+
+    def execute(self, path: str = "", content: str = "", **kwargs: Any) -> Dict[str, Any]:
+        return self.fs.write_file(path, content)
+
+
+class EditFileTool(BaseTool):
+    """Tool for targeted replacement of text in an existing file."""
+    name = "filesystem.edit_file"
+    aliases = ["edit_file"]
+    description = (
+        "Perform a targeted replacement of 'old_text' with 'new_text' in an existing file. "
+        "Target file must exist, and 'old_text' must occur exactly once to avoid ambiguity."
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Path to the file to edit."
+            },
+            "old_text": {
+                "type": "string",
+                "description": "Exact text snippet in the file to be replaced."
+            },
+            "new_text": {
+                "type": "string",
+                "description": "New replacement text snippet."
+            }
+        },
+        "required": ["path", "old_text", "new_text"]
+    }
+
+    def __init__(self, fs_tool: Optional[FilesystemTool] = None):
+        self.fs = fs_tool or FilesystemTool()
+
+    def execute(self, path: str = "", old_text: str = "", new_text: str = "", **kwargs: Any) -> Dict[str, Any]:
+        return self.fs.edit_file(path, old_text, new_text)

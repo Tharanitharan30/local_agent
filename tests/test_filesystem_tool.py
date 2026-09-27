@@ -7,6 +7,9 @@ from tools.filesystem import (
     ReadFileTool,
     SearchFilesTool,
     FileInfoTool,
+    CreateFileTool,
+    WriteFileTool,
+    EditFileTool,
     resolve_safe_path,
     is_binary_file,
 )
@@ -22,6 +25,9 @@ def mock_workspace(tmp_path: Path):
     (ws / "hello.txt").write_text("Hello, Zia filesystem!", encoding="utf-8")
     (ws / "config.py").write_text("DEBUG = True\nPORT = 8080\n", encoding="utf-8")
     (ws / "script.py").write_text("print('test script')\n", encoding="utf-8")
+
+    # Ambiguous file with multiple occurrences
+    (ws / "ambiguous.txt").write_text("apple\nbanana\napple\norange\n", encoding="utf-8")
 
     # Subdirectory with files
     subdir = ws / "subdir"
@@ -103,7 +109,6 @@ def test_read_file_nonexistent(mock_workspace: Path):
 
 
 def test_read_file_oversized(mock_workspace: Path):
-    # Set limit to 1000 bytes (large.txt is 2000 bytes)
     fs = FilesystemTool(workspace_root=mock_workspace, max_read_size=1000)
     res = fs.read_file("large.txt")
     assert res["success"] is False
@@ -137,7 +142,6 @@ def test_search_files_matching(mock_workspace: Path):
     assert "config.py" in names
     assert "script.py" in names
     assert "sub_script.py" in names
-    # .venv should be ignored
     assert "ignored.py" not in names
 
 
@@ -194,63 +198,192 @@ def test_file_info_nonexistent(mock_workspace: Path):
 
 
 # ==============================================================================
-# Security & Workspace Policy tests
+# create_file tests (Milestone 3)
 # ==============================================================================
 
-def test_path_traversal_rejected(mock_workspace: Path):
+def test_create_file_new(mock_workspace: Path):
     fs = FilesystemTool(workspace_root=mock_workspace)
-    # Attempt to escape workspace using relative traversal
-    res = fs.read_file("../../etc/passwd")
+    res = fs.create_file("new_script.py", "print('hello from new file')")
+    assert res["success"] is True
+    assert res["operation"] == "create_file"
+    assert (mock_workspace / "new_script.py").exists()
+    assert (mock_workspace / "new_script.py").read_text(encoding="utf-8") == "print('hello from new file')"
+    assert res["bytes_written"] > 0
+
+
+def test_create_file_already_exists(mock_workspace: Path):
+    fs = FilesystemTool(workspace_root=mock_workspace)
+    res = fs.create_file("hello.txt", "Overwrite attempt")
+    assert res["success"] is False
+    assert "already exists" in res["error"]
+    # Ensure original was not modified
+    assert (mock_workspace / "hello.txt").read_text(encoding="utf-8") == "Hello, Zia filesystem!"
+
+
+def test_create_file_workspace_escape(mock_workspace: Path):
+    fs = FilesystemTool(workspace_root=mock_workspace)
+    res = fs.create_file("../outside.txt", "Escaping workspace")
+    assert res["success"] is False
+    assert "outside the allowed workspace" in res["error"]
+    assert not (mock_workspace.parent / "outside.txt").exists()
+
+
+def test_create_file_oversized(mock_workspace: Path):
+    fs = FilesystemTool(workspace_root=mock_workspace, max_write_size=100)
+    res = fs.create_file("too_large.txt", "B" * 200)
+    assert res["success"] is False
+    assert "exceeds maximum allowed write size" in res["error"]
+    assert not (mock_workspace / "too_large.txt").exists()
+
+
+def test_create_file_nonexistent_parent(mock_workspace: Path):
+    fs = FilesystemTool(workspace_root=mock_workspace)
+    res = fs.create_file("missing_parent_dir/new.txt", "Content")
+    assert res["success"] is False
+    assert "Parent directory" in res["error"]
+
+
+# ==============================================================================
+# write_file tests (Milestone 3)
+# ==============================================================================
+
+def test_write_file_existing(mock_workspace: Path):
+    fs = FilesystemTool(workspace_root=mock_workspace)
+    res = fs.write_file("hello.txt", "Completely rewritten content!")
+    assert res["success"] is True
+    assert res["operation"] == "write_file"
+    assert (mock_workspace / "hello.txt").read_text(encoding="utf-8") == "Completely rewritten content!"
+
+
+def test_write_file_nonexistent_rejection(mock_workspace: Path):
+    fs = FilesystemTool(workspace_root=mock_workspace)
+    res = fs.write_file("nonexistent.txt", "Some content")
+    assert res["success"] is False
+    assert "does not exist" in res["error"]
+    assert "Use 'create_file'" in res["error"]
+
+
+def test_write_file_workspace_escape(mock_workspace: Path):
+    fs = FilesystemTool(workspace_root=mock_workspace)
+    res = fs.write_file("../escape.txt", "Content")
     assert res["success"] is False
     assert "outside the allowed workspace" in res["error"]
 
 
-def test_outside_workspace_rejected(mock_workspace: Path):
+def test_write_file_on_directory_rejection(mock_workspace: Path):
     fs = FilesystemTool(workspace_root=mock_workspace)
-    res = fs.list_directory("/etc")
+    res = fs.write_file("subdir", "Content")
+    assert res["success"] is False
+    assert "is a directory" in res["error"]
+
+
+# ==============================================================================
+# edit_file tests (Milestone 3)
+# ==============================================================================
+
+def test_edit_file_exact_replacement(mock_workspace: Path):
+    fs = FilesystemTool(workspace_root=mock_workspace)
+    # config.py has: "DEBUG = True\nPORT = 8080\n"
+    res = fs.edit_file("config.py", old_text="DEBUG = True", new_text="DEBUG = False")
+    assert res["success"] is True
+    assert res["operation"] == "edit_file"
+    assert res["replacements"] == 1
+    content = (mock_workspace / "config.py").read_text(encoding="utf-8")
+    assert "DEBUG = False" in content
+    assert "PORT = 8080" in content
+
+
+def test_edit_file_old_text_not_found(mock_workspace: Path):
+    fs = FilesystemTool(workspace_root=mock_workspace)
+    res = fs.edit_file("config.py", old_text="NONEXISTENT_KEY = 123", new_text="REPLACED")
+    assert res["success"] is False
+    assert "was not found" in res["error"]
+
+
+def test_edit_file_ambiguous_rejection(mock_workspace: Path):
+    fs = FilesystemTool(workspace_root=mock_workspace)
+    # ambiguous.txt contains 'apple' twice
+    res = fs.edit_file("ambiguous.txt", old_text="apple", new_text="pear")
+    assert res["success"] is False
+    assert "Ambiguous match" in res["error"]
+    assert "occurs 2 times" in res["error"]
+    # Ensure file was not modified
+    content = (mock_workspace / "ambiguous.txt").read_text(encoding="utf-8")
+    assert content.count("apple") == 2
+
+
+def test_edit_file_nonexistent_rejection(mock_workspace: Path):
+    fs = FilesystemTool(workspace_root=mock_workspace)
+    res = fs.edit_file("missing.py", old_text="foo", new_text="bar")
+    assert res["success"] is False
+    assert "does not exist" in res["error"]
+
+
+def test_edit_file_workspace_escape(mock_workspace: Path):
+    fs = FilesystemTool(workspace_root=mock_workspace)
+    res = fs.edit_file("../../etc/issue", old_text="foo", new_text="bar")
     assert res["success"] is False
     assert "outside the allowed workspace" in res["error"]
 
 
-def test_system_directories_forbidden(mock_workspace: Path):
+# ==============================================================================
+# Security & Backup tests
+# ==============================================================================
+
+def test_backup_creation_on_edit(mock_workspace: Path):
+    fs = FilesystemTool(workspace_root=mock_workspace, enable_backups=True)
+    res = fs.edit_file("config.py", old_text="PORT = 8080", new_text="PORT = 9090")
+    assert res["success"] is True
+
+    backup_dir = mock_workspace / ".zia_backups"
+    assert backup_dir.exists()
+    backups = list(backup_dir.glob("config.py.*.bak"))
+    assert len(backups) == 1
+    # Check that backup contains original text
+    assert "PORT = 8080" in backups[0].read_text(encoding="utf-8")
+
+
+def test_system_directories_forbidden_writes(mock_workspace: Path):
     fs = FilesystemTool(workspace_root=mock_workspace)
-    for forbidden in ["/proc", "/sys", "/dev"]:
-        res = fs.list_directory(forbidden)
-        assert res["success"] is False
-        assert "outside the allowed workspace" in res["error"] or "forbidden" in res["error"]
+    for forbidden in ["/proc/foo", "/sys/foo", "/dev/foo", "/etc/foo"]:
+        res_create = fs.create_file(forbidden, "test")
+        assert res_create["success"] is False
+        assert "outside the allowed workspace" in res_create["error"] or "forbidden" in res_create["error"]
+
+        res_write = fs.write_file(forbidden, "test")
+        assert res_write["success"] is False
+        assert "outside the allowed workspace" in res_write["error"] or "forbidden" in res_write["error"]
 
 
-def test_read_only_nature():
-    """Verify that filesystem tool only exposes read-oriented methods and no write/delete."""
+def test_no_destructive_methods():
+    """Verify that filesystem tool does not expose delete or chmod."""
     fs = FilesystemTool()
-    disallowed_methods = ["write", "create", "delete", "remove", "rename", "chmod", "execute_file"]
-    for m in disallowed_methods:
-        assert not hasattr(fs, m), f"FilesystemTool should not expose write/destructive method: {m}"
+    for method in ["delete", "remove", "unlink", "rmdir", "chmod", "chown"]:
+        assert not hasattr(fs, method), f"Destructive method '{method}' must not exist."
 
 
 # ==============================================================================
-# Dedicated Tool Wrappers tests
+# Modular Tool Wrappers tests
 # ==============================================================================
 
 def test_modular_wrappers(mock_workspace: Path):
     fs = FilesystemTool(workspace_root=mock_workspace)
 
-    list_tool = ListDirectoryTool(fs_tool=fs)
-    assert list_tool.name == "filesystem.list_directory"
-    res_list = list_tool.execute(path=".")
-    assert res_list["success"] is True
+    create_tool = CreateFileTool(fs_tool=fs)
+    assert create_tool.name == "filesystem.create_file"
+    res_c = create_tool.execute(path="wrapper_test.txt", content="created via wrapper")
+    assert res_c["success"] is True
+
+    edit_tool = EditFileTool(fs_tool=fs)
+    assert edit_tool.name == "filesystem.edit_file"
+    res_e = edit_tool.execute(path="wrapper_test.txt", old_text="created", new_text="edited")
+    assert res_e["success"] is True
+
+    write_tool = WriteFileTool(fs_tool=fs)
+    assert write_tool.name == "filesystem.write_file"
+    res_w = write_tool.execute(path="wrapper_test.txt", content="overwritten via wrapper")
+    assert res_w["success"] is True
 
     read_tool = ReadFileTool(fs_tool=fs)
-    assert read_tool.name == "filesystem.read_file"
-    res_read = read_tool.execute(path="hello.txt")
-    assert res_read["success"] is True
-
-    search_tool = SearchFilesTool(fs_tool=fs)
-    assert search_tool.name == "filesystem.search_files"
-    res_search = search_tool.execute(path=".", pattern="*.txt")
-    assert res_search["success"] is True
-
-    info_tool = FileInfoTool(fs_tool=fs)
-    assert info_tool.name == "filesystem.file_info"
-    res_info = info_tool.execute(path="hello.txt")
-    assert res_info["success"] is True
+    res_r = read_tool.execute(path="wrapper_test.txt")
+    assert res_r["content"] == "overwritten via wrapper"

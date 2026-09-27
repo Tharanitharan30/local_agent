@@ -6,6 +6,9 @@ from tools.filesystem import (
     ReadFileTool,
     SearchFilesTool,
     FileInfoTool,
+    CreateFileTool,
+    WriteFileTool,
+    EditFileTool,
 )
 
 __all__ = [
@@ -17,4 +20,7 @@ __all__ = [
     "ReadFileTool",
     "SearchFilesTool",
     "FileInfoTool",
+    "CreateFileTool",
+    "WriteFileTool",
+    "EditFileTool",
 ]
