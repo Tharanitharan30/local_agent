@@ -22,9 +22,10 @@ MAX_CONTEXT_LENGTH = int(os.getenv("ZIA_MAX_CONTEXT_LENGTH", "2048"))
 MAX_NEW_TOKENS = int(os.getenv("ZIA_MAX_NEW_TOKENS", "256"))
 TEMPERATURE = float(os.getenv("ZIA_TEMPERATURE", "0.6"))
 TOP_P = float(os.getenv("ZIA_TOP_P", "0.8"))
+ENABLE_THINKING = os.getenv("ZIA_ENABLE_THINKING", "false").lower() in ("true", "1", "yes")
 
 # Agent Execution Configuration
 MAX_TOOL_ITERATIONS = int(os.getenv("ZIA_MAX_TOOL_ITERATIONS", "5"))
 
 # Terminal Tool Configuration
-TERMINAL_TIMEOUT = int(os.getenv("ZIA_TERMINAL_TIMEOUT", "30"))
+TERMINAL_TIMEOUT = int(os.getenv("ZIA_TERMINAL_TIMEOUT", "10"))

@@ -1,5 +1,4 @@
 import gc
-import sys
 from typing import List, Dict, Any, Optional
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
@@ -119,24 +118,40 @@ class QwenModel:
 
     def generate_response(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         max_new_tokens: int = config.MAX_NEW_TOKENS,
         temperature: float = config.TEMPERATURE,
         top_p: float = config.TOP_P,
         max_context_length: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        enable_thinking: bool = config.ENABLE_THINKING,
     ) -> str:
         """
-        Generate text response given standard chat messages format:
-        [{"role": "system", "content": ...}, {"role": "user", "content": ...}, ...]
+        Generate text response given standard chat messages format.
+        Supports structured tool schemas via tokenizer chat template.
         Ensures context length bounds are strictly enforced to preserve GPU VRAM.
         """
         ctx_limit = max_context_length or self.max_context_length
 
-        text = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+        template_kwargs: Dict[str, Any] = {
+            "tokenize": False,
+            "add_generation_prompt": True,
+        }
+        if tools:
+            template_kwargs["tools"] = tools
+
+        # Apply enable_thinking if supported by template
+        try:
+            text = self.tokenizer.apply_chat_template(
+                messages,
+                enable_thinking=enable_thinking,
+                **template_kwargs,
+            )
+        except TypeError:
+            text = self.tokenizer.apply_chat_template(
+                messages,
+                **template_kwargs,
+            )
 
         inputs = self.tokenizer(text, return_tensors="pt")
         input_ids = inputs["input_ids"]
