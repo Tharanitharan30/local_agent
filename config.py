@@ -29,3 +29,9 @@ MAX_TOOL_ITERATIONS = int(os.getenv("ZIA_MAX_TOOL_ITERATIONS", "5"))
 
 # Terminal Tool Configuration
 TERMINAL_TIMEOUT = int(os.getenv("ZIA_TERMINAL_TIMEOUT", "10"))
+
+# Filesystem Tool Configuration
+WORKSPACE_ROOT = Path(os.getenv("ZIA_WORKSPACE_ROOT", str(BASE_DIR))).resolve()
+MAX_READ_FILE_SIZE = int(os.getenv("ZIA_MAX_READ_FILE_SIZE", str(64 * 1024)))  # 64 KB limit
+MAX_SEARCH_RESULTS = int(os.getenv("ZIA_MAX_SEARCH_RESULTS", "50"))
+MAX_SEARCH_DEPTH = int(os.getenv("ZIA_MAX_SEARCH_DEPTH", "5"))

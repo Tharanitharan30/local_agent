@@ -9,6 +9,13 @@ import config
 from model import QwenModel
 from tools.base import BaseTool
 from tools.terminal import TerminalTool
+from tools.filesystem import (
+    FilesystemTool,
+    ListDirectoryTool,
+    ReadFileTool,
+    SearchFilesTool,
+    FileInfoTool,
+)
 
 console = Console()
 
@@ -46,16 +53,31 @@ class Agent:
         return "You are Zia, a local computer-use AI assistant running on Ubuntu Linux."
 
     def register_tool(self, tool: BaseTool) -> None:
-        """Register a tool instance into the agent's tool registry."""
+        """Register a tool instance into the agent's tool registry, including aliases."""
         self.tools[tool.name] = tool
+        # Register explicit aliases if declared on tool
+        for alias in getattr(tool, "aliases", []):
+            self.tools[alias] = tool
+        # Register short/dotted cross-aliases
+        if "." in tool.name:
+            short_name = tool.name.split(".", 1)[1]
+            self.tools[short_name] = tool
+        else:
+            self.tools[f"filesystem.{tool.name}"] = tool
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Return function calling schemas for all registered tools."""
-        return [tool.to_tool_schema() for tool in self.tools.values()]
+        """Return unique function calling schemas for registered tools."""
+        seen = set()
+        schemas = []
+        for tool in self.tools.values():
+            if id(tool) not in seen:
+                seen.add(id(tool))
+                schemas.append(tool.to_tool_schema())
+        return schemas
 
     def parse_tool_call(self, text: str) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
         """
-        Parses structured model tool call in the standard Qwen format:
+        Parses structured model tool call in standard Qwen format:
         <tool_call>
         {
             "name": "terminal",
@@ -97,27 +119,42 @@ class Agent:
         except json.JSONDecodeError:
             return None, None
 
+    def resolve_tool(self, tool_name: str) -> Optional[BaseTool]:
+        """Resolve a tool name or alias to registered BaseTool instance."""
+        if tool_name in self.tools:
+            return self.tools[tool_name]
+        if f"filesystem.{tool_name}" in self.tools:
+            return self.tools[f"filesystem.{tool_name}"]
+        if "." in tool_name:
+            suffix = tool_name.split(".", 1)[1]
+            if suffix in self.tools:
+                return self.tools[suffix]
+        return None
+
     def validate_tool_call(
         self, tool_name: Optional[str], arguments: Optional[Dict[str, Any]]
-    ) -> Tuple[bool, Optional[str]]:
+    ) -> Tuple[bool, Optional[str], Optional[BaseTool]]:
         """
-        Validates whether the tool exists and the required parameters are supplied.
-        Returns (is_valid, error_message).
+        Validates whether the tool exists and required parameters are supplied.
+        Returns (is_valid, error_message, resolved_tool).
         """
-        if not tool_name or tool_name not in self.tools:
-            available = list(self.tools.keys())
-            return False, f"Unknown tool '{tool_name}'. Available tools: {available}"
+        if not tool_name:
+            return False, "Missing tool name.", None
 
-        tool = self.tools[tool_name]
-        required_params = tool.input_schema.get("required", [])
+        tool = self.resolve_tool(tool_name)
+        if not tool:
+            available = sorted(list(set(self.tools.keys())))
+            return False, f"Unknown tool '{tool_name}'. Available tools: {available}", None
+
         if arguments is None or not isinstance(arguments, dict):
-            return False, f"Invalid arguments format for tool '{tool_name}'. Expected dictionary."
+            return False, f"Invalid arguments format for tool '{tool_name}'. Expected dictionary.", None
 
+        required_params = tool.input_schema.get("required", [])
         missing = [p for p in required_params if p not in arguments]
         if missing:
-            return False, f"Missing required argument(s) for tool '{tool_name}': {missing}"
+            return False, f"Missing required argument(s) for tool '{tool_name}': {missing}", None
 
-        return True, None
+        return True, None, tool
 
     def run(self, user_input: str) -> str:
         """
@@ -157,11 +194,16 @@ class Agent:
             console.print(f"[bold cyan][TOOL][/bold cyan] {tool_name}")
             if tool_name == "terminal" and isinstance(arguments, dict) and "command" in arguments:
                 console.print(f"[bold white][CMD][/bold white]  {arguments['command']}")
+            elif isinstance(arguments, dict):
+                if "path" in arguments:
+                    console.print(f"[bold white][PATH][/bold white] {arguments['path']}")
+                if "pattern" in arguments:
+                    console.print(f"[bold white][PATTERN][/bold white] {arguments['pattern']}")
             sys.stdout.flush()
 
             # Validate tool call
-            is_valid, validation_err = self.validate_tool_call(tool_name, arguments)
-            if not is_valid:
+            is_valid, validation_err, tool = self.validate_tool_call(tool_name, arguments)
+            if not is_valid or tool is None:
                 result = {
                     "success": False,
                     "stdout": "",
@@ -169,7 +211,6 @@ class Agent:
                     "exit_code": 1,
                 }
             else:
-                tool = self.tools[tool_name]
                 try:
                     result = tool.execute(**arguments)
                 except Exception as e:
@@ -182,12 +223,15 @@ class Agent:
 
             # Log formatted tool result status
             status_color = "green" if result.get("success") else "red"
-            exit_code = result.get("exit_code", -1)
+            exit_code = result.get("exit_code")
             blocked = result.get("blocked", False)
             if blocked:
-                console.print(f"[bold red][BLOCKED][/bold red] {result.get('reason', 'Potentially destructive command')}")
-            else:
+                console.print(f"[bold red][BLOCKED][/bold red] {result.get('reason', 'Operation blocked by policy')}")
+            elif exit_code is not None:
                 console.print(f"[bold {status_color}][RESULT][/bold {status_color}] exit_code={exit_code}")
+            else:
+                status_text = "OK" if result.get("success") else result.get("error", "Failed")
+                console.print(f"[bold {status_color}][RESULT][/bold {status_color}] {status_text}")
             sys.stdout.flush()
 
             # Append assistant tool call and tool execution result to message history
@@ -217,6 +261,11 @@ def main():
     model = QwenModel()
     agent = Agent(model=model)
     agent.register_tool(TerminalTool())
+    agent.register_tool(ListDirectoryTool())
+    agent.register_tool(ReadFileTool())
+    agent.register_tool(SearchFilesTool())
+    agent.register_tool(FileInfoTool())
+    agent.register_tool(FilesystemTool())
 
     console.print("\n[bold green]Zia is ready! Type 'exit' or 'quit' to stop.[/bold green]\n")
 
