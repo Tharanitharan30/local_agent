@@ -27,6 +27,20 @@ from tools.keyboard import (
     KeyboardPressTool,
     KeyboardHotkeyTool,
 )
+from tools.windows import (
+    WindowListTool,
+    WindowGetActiveTool,
+    WindowFocusTool,
+    WindowMinimizeTool,
+    WindowMaximizeTool,
+    WindowCloseTool,
+    query_desktop_windows,
+    get_active_desktop_window,
+)
+from tools.applications import (
+    ApplicationListTool,
+    ApplicationLaunchTool,
+)
 
 __all__ = [
     "BaseTool",
@@ -55,4 +69,14 @@ __all__ = [
     "KeyboardTypeTool",
     "KeyboardPressTool",
     "KeyboardHotkeyTool",
+    "WindowListTool",
+    "WindowGetActiveTool",
+    "WindowFocusTool",
+    "WindowMinimizeTool",
+    "WindowMaximizeTool",
+    "WindowCloseTool",
+    "ApplicationListTool",
+    "ApplicationLaunchTool",
+    "query_desktop_windows",
+    "get_active_desktop_window",
 ]

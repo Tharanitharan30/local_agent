@@ -35,6 +35,18 @@ from tools.keyboard import (
     KeyboardPressTool,
     KeyboardHotkeyTool,
 )
+from tools.windows import (
+    WindowListTool,
+    WindowGetActiveTool,
+    WindowFocusTool,
+    WindowMinimizeTool,
+    WindowMaximizeTool,
+    WindowCloseTool,
+)
+from tools.applications import (
+    ApplicationListTool,
+    ApplicationLaunchTool,
+)
 
 console = Console()
 
@@ -142,7 +154,7 @@ class Agent:
         """Resolve a tool name or alias to registered BaseTool instance."""
         if tool_name in self.tools:
             return self.tools[tool_name]
-        for prefix in ("filesystem.", "screen.", "mouse.", "keyboard."):
+        for prefix in ("filesystem.", "screen.", "mouse.", "keyboard.", "window.", "application."):
             if f"{prefix}{tool_name}" in self.tools:
                 return self.tools[f"{prefix}{tool_name}"]
         if "." in tool_name:
@@ -248,6 +260,14 @@ class Agent:
                     k = arguments.get("key", "")
                     ks = arguments.get("keys", "")
                     console.print(f"[bold white][KEYBOARD][/bold white] action='{act}' text='{txt}' key='{k or ks}'")
+                elif "window" in tool_name:
+                    win_id = arguments.get("window_id", "")
+                    app = arguments.get("application", "")
+                    title = arguments.get("title", "")
+                    console.print(f"[bold white][WINDOW][/bold white] id='{win_id}' app='{app}' title='{title}'")
+                elif "application" in tool_name:
+                    app = arguments.get("application", "")
+                    console.print(f"[bold white][APP][/bold white] app='{app}'")
                 if "path" in arguments:
                     console.print(f"[bold white][PATH][/bold white] {arguments['path']}")
                 if "pattern" in arguments:
@@ -350,6 +370,14 @@ def main():
     agent.register_tool(KeyboardTypeTool())
     agent.register_tool(KeyboardPressTool())
     agent.register_tool(KeyboardHotkeyTool())
+    agent.register_tool(WindowListTool())
+    agent.register_tool(WindowGetActiveTool())
+    agent.register_tool(WindowFocusTool())
+    agent.register_tool(WindowMinimizeTool())
+    agent.register_tool(WindowMaximizeTool())
+    agent.register_tool(WindowCloseTool())
+    agent.register_tool(ApplicationListTool())
+    agent.register_tool(ApplicationLaunchTool())
 
     console.print("\n[bold green]Zia is ready! Type 'exit' or 'quit' to stop.[/bold green]\n")
 

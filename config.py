@@ -58,3 +58,24 @@ REQUIRE_ACTION_CONFIRMATION = os.getenv("ZIA_REQUIRE_ACTION_CONFIRMATION", "fals
 CONFIRM_HIGH_IMPACT_ACTIONS = os.getenv("ZIA_CONFIRM_HIGH_IMPACT_ACTIONS", "true").lower() in ("true", "1", "yes")
 DEFAULT_TYPING_DELAY = float(os.getenv("ZIA_DEFAULT_TYPING_DELAY", "0.01"))
 DEFAULT_MOUSE_DELAY = float(os.getenv("ZIA_DEFAULT_MOUSE_DELAY", "0.05"))
+
+# Desktop, Window, and Application Configuration
+DEFAULT_WINDOW_TIMEOUT = float(os.getenv("ZIA_DEFAULT_WINDOW_TIMEOUT", "5.0"))
+APPLICATION_ALLOWLIST = {
+    "terminal": ["ptyxis", "foot", "gnome-terminal", "alacritty", "kitty", "konsole", "xterm"],
+    "text editor": ["gnome-text-editor", "gedit", "kate", "mousepad"],
+    "editor": ["gnome-text-editor", "gedit", "code"],
+    "code": ["code", "codium"],
+    "vs code": ["code"],
+    "vscode": ["code"],
+    "file manager": ["nautilus", "thunar", "dolphin", "nemo"],
+    "files": ["nautilus"],
+    "calculator": ["gnome-calculator", "kcalc", "galculator"],
+    "calc": ["gnome-calculator"],
+    "browser": ["microsoft-edge", "google-chrome", "firefox", "chromium", "brave-browser"],
+    "edge": ["microsoft-edge"],
+    "chrome": ["google-chrome", "chromium"],
+    "firefox": ["firefox"],
+    "system monitor": ["resources", "gnome-system-monitor"],
+    "resources": ["resources"],
+}
