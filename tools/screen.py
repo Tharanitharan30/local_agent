@@ -28,6 +28,8 @@ def capture_display_portal(timeout: int = config.SCREEN_TIMEOUT) -> Tuple[bool, 
     temp_path: Optional[Path] = None
     try:
         conn = open_dbus_connection(bus="SESSION")
+        if hasattr(conn, "sock") and conn.sock:
+            conn.sock.settimeout(1.0)
 
         # Listen for Response signal from portal Request interface
         add_match_msg = new_method_call(
@@ -58,24 +60,27 @@ def capture_display_portal(timeout: int = config.SCREEN_TIMEOUT) -> Tuple[bool, 
         err_msg: Optional[str] = None
 
         while time.time() - start_time < timeout:
-            msg = conn.receive()
-            if (
-                msg.header.message_type.name == "signal"
-                and msg.header.fields.get(1) == req_path
-            ):
-                res_code, res_dict = msg.body
-                if res_code == 0 and "uri" in res_dict:
-                    uri = res_dict["uri"][1]
-                    file_path_str = urllib.parse.unquote(urllib.parse.urlparse(uri).path)
-                    temp_path = Path(file_path_str)
-                    if temp_path.exists():
-                        with Image.open(temp_path) as opened_img:
-                            img = opened_img.copy()
+            try:
+                msg = conn.receive()
+                if (
+                    msg.header.message_type.name == "signal"
+                    and msg.header.fields.get(1) == req_path
+                ):
+                    res_code, res_dict = msg.body
+                    if res_code == 0 and "uri" in res_dict:
+                        uri = res_dict["uri"][1]
+                        file_path_str = urllib.parse.unquote(urllib.parse.urlparse(uri).path)
+                        temp_path = Path(file_path_str)
+                        if temp_path.exists():
+                            with Image.open(temp_path) as opened_img:
+                                img = opened_img.copy()
+                        else:
+                            err_msg = f"Portal returned file path that does not exist: {file_path_str}"
                     else:
-                        err_msg = f"Portal returned file path that does not exist: {file_path_str}"
-                else:
-                    err_msg = f"Portal screenshot request denied or cancelled (code {res_code})."
-                break
+                        err_msg = f"Portal screenshot request denied or cancelled (code {res_code})."
+                    break
+            except Exception:
+                continue
 
         conn.close()
 
@@ -218,7 +223,7 @@ class ScreenTool(BaseTool):
         self.vision_model = get_vision_model()
         return self.vision_model
 
-    def execute(self, display: str = "primary", query: str = "") -> Dict[str, Any]:
+    def execute(self, display: str = "primary", query: str = "", **kwargs: Any) -> Dict[str, Any]:
         """
         Executes screen capture and visual analysis.
         Returns structured dictionary with dimensions and visual description.

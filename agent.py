@@ -20,6 +20,21 @@ from tools.filesystem import (
     EditFileTool,
 )
 from tools.screen import ScreenTool
+from tools.safety import ActionLimitTracker
+from tools.mouse import (
+    MouseTool,
+    MouseMoveTool,
+    MouseClickTool,
+    MouseDoubleClickTool,
+    MouseRightClickTool,
+    MouseScrollTool,
+)
+from tools.keyboard import (
+    KeyboardTool,
+    KeyboardTypeTool,
+    KeyboardPressTool,
+    KeyboardHotkeyTool,
+)
 
 console = Console()
 
@@ -50,6 +65,7 @@ class Agent:
         self.tools: Dict[str, BaseTool] = {}
         self.system_prompt = self._load_system_prompt()
         self.messages: List[Dict[str, Any]] = []
+        self.action_tracker = ActionLimitTracker()
 
     def _load_system_prompt(self) -> str:
         if config.SYSTEM_PROMPT_PATH.exists():
@@ -126,10 +142,9 @@ class Agent:
         """Resolve a tool name or alias to registered BaseTool instance."""
         if tool_name in self.tools:
             return self.tools[tool_name]
-        if f"filesystem.{tool_name}" in self.tools:
-            return self.tools[f"filesystem.{tool_name}"]
-        if f"screen.{tool_name}" in self.tools:
-            return self.tools[f"screen.{tool_name}"]
+        for prefix in ("filesystem.", "screen.", "mouse.", "keyboard."):
+            if f"{prefix}{tool_name}" in self.tools:
+                return self.tools[f"{prefix}{tool_name}"]
         if "." in tool_name:
             suffix = tool_name.split(".", 1)[1]
             if suffix in self.tools:
@@ -171,14 +186,15 @@ class Agent:
             recent_msgs = self.messages[-(max_history_turns * 2):]
             self.messages = [system_msg] + recent_msgs
 
-    def run(self, user_input: str) -> str:
+    def run(self, user_input: str, reset_history: bool = False) -> str:
         """
         Processes a user request through the bounded agent loop up to max_tool_iterations.
         Maintains conversational context across turns.
         """
-        if not self.messages:
-            self.messages.append({"role": "system", "content": self.system_prompt})
+        if reset_history or not self.messages:
+            self.messages = [{"role": "system", "content": self.system_prompt}]
 
+        self.action_tracker.reset()
         self._prune_messages()
         self.messages.append({"role": "user", "content": user_input})
         tool_schemas = self.get_tool_schemas()
@@ -206,6 +222,11 @@ class Agent:
                 self.messages.append({"role": "assistant", "content": raw_response})
                 return clean_response_text(raw_response)
 
+            if isinstance(arguments, dict) and "." in tool_name:
+                prefix, suffix = tool_name.split(".", 1)
+                if prefix in ("mouse", "keyboard") and "action" not in arguments:
+                    arguments["action"] = suffix
+
             # Structured tool call requested by model
             console.print(f"[bold cyan][TOOL][/bold cyan] {tool_name}")
             if tool_name == "terminal" and isinstance(arguments, dict) and "command" in arguments:
@@ -215,6 +236,18 @@ class Agent:
                     disp = arguments.get("display", "primary")
                     qry = arguments.get("query", "")
                     console.print(f"[bold white][SCREEN][/bold white] display='{disp}' query='{qry}'")
+                elif "mouse" in tool_name:
+                    act = arguments.get("action", tool_name.replace("mouse.", ""))
+                    x = arguments.get("x")
+                    y = arguments.get("y")
+                    btn = arguments.get("button", "left")
+                    console.print(f"[bold white][MOUSE][/bold white] action='{act}' at=({x}, {y}) button='{btn}'")
+                elif "keyboard" in tool_name:
+                    act = arguments.get("action", tool_name.replace("keyboard.", ""))
+                    txt = arguments.get("text", "")
+                    k = arguments.get("key", "")
+                    ks = arguments.get("keys", "")
+                    console.print(f"[bold white][KEYBOARD][/bold white] action='{act}' text='{txt}' key='{k or ks}'")
                 if "path" in arguments:
                     console.print(f"[bold white][PATH][/bold white] {arguments['path']}")
                 if "pattern" in arguments:
@@ -233,15 +266,26 @@ class Agent:
                     "exit_code": 1,
                 }
             else:
-                try:
-                    result = tool.execute(**arguments)
-                except Exception as e:
+                # Enforce action limits to prevent runaway loops
+                action_sig = f"{tool_name}:{json.dumps(arguments, sort_keys=True)}"
+                is_allowed, limit_err = self.action_tracker.record_and_validate(action_sig)
+                if not is_allowed:
                     result = {
                         "success": False,
-                        "stdout": "",
-                        "stderr": f"Execution error in tool '{tool_name}': {str(e)}",
-                        "exit_code": 1,
+                        "blocked": True,
+                        "reason": limit_err,
+                        "error": limit_err,
                     }
+                else:
+                    try:
+                        result = tool.execute(**arguments)
+                    except Exception as e:
+                        result = {
+                            "success": False,
+                            "stdout": "",
+                            "stderr": f"Execution error in tool '{tool_name}': {str(e)}",
+                            "exit_code": 1,
+                        }
 
             # Log formatted tool result status
             status_color = "green" if result.get("success") else "red"
@@ -250,7 +294,11 @@ class Agent:
             if blocked:
                 console.print(f"[bold red][BLOCKED][/bold red] {result.get('reason', 'Operation blocked by policy')}")
             elif exit_code is not None:
-                console.print(f"[bold {status_color}][RESULT][/bold {status_color}] exit_code={exit_code}")
+                err_msg = result.get("stderr") or result.get("error") or ""
+                if exit_code != 0 and err_msg:
+                    console.print(f"[bold {status_color}][RESULT][/bold {status_color}] exit_code={exit_code} ({err_msg})")
+                else:
+                    console.print(f"[bold {status_color}][RESULT][/bold {status_color}] exit_code={exit_code}")
             else:
                 status_text = result.get("message") or ("OK" if result.get("success") else result.get("error", "Failed"))
                 console.print(f"[bold {status_color}][RESULT][/bold {status_color}] {status_text}")
@@ -292,6 +340,16 @@ def main():
     agent.register_tool(EditFileTool())
     agent.register_tool(FilesystemTool())
     agent.register_tool(ScreenTool())
+    agent.register_tool(MouseTool())
+    agent.register_tool(MouseMoveTool())
+    agent.register_tool(MouseClickTool())
+    agent.register_tool(MouseDoubleClickTool())
+    agent.register_tool(MouseRightClickTool())
+    agent.register_tool(MouseScrollTool())
+    agent.register_tool(KeyboardTool())
+    agent.register_tool(KeyboardTypeTool())
+    agent.register_tool(KeyboardPressTool())
+    agent.register_tool(KeyboardHotkeyTool())
 
     console.print("\n[bold green]Zia is ready! Type 'exit' or 'quit' to stop.[/bold green]\n")
 
@@ -311,6 +369,8 @@ def main():
                 console.print("\n[bold yellow]Exiting...[/bold yellow]")
                 break
     finally:
+        from tools.input_backend import get_input_backend
+        get_input_backend().close()
         from model.vision import get_vision_model
         get_vision_model().unload()
         model.unload()

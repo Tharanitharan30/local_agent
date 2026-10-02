@@ -6,3 +6,5 @@ rich
 pytest
 jeepney
 qwen-vl-utils
+pyautogui
+pynput

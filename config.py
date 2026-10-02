@@ -50,3 +50,11 @@ VISION_MODEL_NAME = os.getenv("ZIA_VISION_MODEL_NAME", "Qwen/Qwen2-VL-2B-Instruc
 VISION_LOAD_IN_4BIT = os.getenv("ZIA_VISION_LOAD_IN_4BIT", "true").lower() in ("true", "1", "yes")
 VISION_MAX_NEW_TOKENS = int(os.getenv("ZIA_VISION_MAX_NEW_TOKENS", "300"))
 VISION_TEMPERATURE = float(os.getenv("ZIA_VISION_TEMPERATURE", "0.2"))
+
+# Input & Action Safety Configuration
+MAX_ACTIONS_PER_TASK = int(os.getenv("ZIA_MAX_ACTIONS_PER_TASK", "10"))
+MAX_RETRIES_PER_ACTION = int(os.getenv("ZIA_MAX_RETRIES_PER_ACTION", "2"))
+REQUIRE_ACTION_CONFIRMATION = os.getenv("ZIA_REQUIRE_ACTION_CONFIRMATION", "false").lower() in ("true", "1", "yes")
+CONFIRM_HIGH_IMPACT_ACTIONS = os.getenv("ZIA_CONFIRM_HIGH_IMPACT_ACTIONS", "true").lower() in ("true", "1", "yes")
+DEFAULT_TYPING_DELAY = float(os.getenv("ZIA_DEFAULT_TYPING_DELAY", "0.01"))
+DEFAULT_MOUSE_DELAY = float(os.getenv("ZIA_DEFAULT_MOUSE_DELAY", "0.05"))
