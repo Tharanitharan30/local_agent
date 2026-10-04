@@ -346,6 +346,8 @@ def main():
     console.print("[bold magenta]║                   ZIA                      ║[/bold magenta]")
     console.print("[bold magenta]║      Local AI Computer-Use Agent           ║[/bold magenta]")
     console.print("[bold magenta]╚════════════════════════════════════════════╝[/bold magenta]\n")
+    console.print(f"Configured Context:     {config.MAX_CONTEXT_LENGTH} tokens")
+    console.print(f"Configured Max Tokens:  {config.MAX_NEW_TOKENS}\n")
 
     # Initialize Qwen Model and Agent Core
     model = QwenModel()

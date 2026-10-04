@@ -18,8 +18,8 @@ BNB_4BIT_USE_DOUBLE_QUANT = os.getenv("ZIA_BNB_4BIT_USE_DOUBLE_QUANT", "true").l
 BNB_4BIT_COMPUTE_DTYPE = os.getenv("ZIA_BNB_4BIT_COMPUTE_DTYPE", "float16")
 
 # Context & Generation Configuration
-MAX_CONTEXT_LENGTH = int(os.getenv("ZIA_MAX_CONTEXT_LENGTH", "4096"))
-MAX_NEW_TOKENS = int(os.getenv("ZIA_MAX_NEW_TOKENS", "256"))
+MAX_CONTEXT_LENGTH = int(os.getenv("ZIA_MAX_CONTEXT_LENGTH", "8192"))
+MAX_NEW_TOKENS = int(os.getenv("ZIA_MAX_NEW_TOKENS", "512"))
 TEMPERATURE = float(os.getenv("ZIA_TEMPERATURE", "0.6"))
 TOP_P = float(os.getenv("ZIA_TOP_P", "0.8"))
 ENABLE_THINKING = os.getenv("ZIA_ENABLE_THINKING", "false").lower() in ("true", "1", "yes")
